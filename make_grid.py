@@ -50,23 +50,30 @@ import datetime as dt
 import netCDF4 as nc
 
 # classes and functions to the computings
-from roms.romslab import RunSetup, rho2uvp, get_metrics, spheric_dist
-from roms.romslab import get_angle, add_topo, process_mask, uvp_mask, smoothgrid
-from roms.romslab import rotfilter, rfact, hanning_smoother
-from roms.romslab import hanning_smoother_coef2d, FX, FY 
+from romslab import RunSetup, rho2uvp, get_metrics, spheric_dist
+from romslab import get_angle, add_topo, process_mask, uvp_mask, smoothgrid
+from romslab import rotfilter, rfact, hanning_smoother
+from romslab import hanning_smoother_coef2d, FX, FY
+import romslab as rl
+
+from romslab import get_zlev, stretching
 
 # SCRIPT START ######################################################
+# USAGE: 
+# python make_grid.py [domain]
+# Ex: 
+#      python make_grid.py cabofrio
 
 # Basic Settings:
 imp = sys.argv[1]
-filetypestr = 'ROMS Grid file'
+filetypestr = 'ROMS Grid file - %s %s' %(imp)
 
 # READING PREVIOUSLY BUILT RELEVANT FILES: ###########################
 # metadata ascii file
 # OA-created netcdf initial T, S file 
 # grid netcdf file
 print ' \n' + '==> ' + '  READING ASCII METADATA FILE ...\n' + ' '
-roms = RunSetup('domains.txt', imp)
+roms = RunSetup( "/home/rsoutelino/students/pytools_students/domains.yaml", imp )
 
 dl = roms.res
 lonr  = np.arange(roms.lonmin, roms.lonmax + dl, dl)
@@ -134,9 +141,24 @@ maskr = process_mask(maskr)
 [masku, maskv, maskp] = uvp_mask(maskr) 
 
 print ' \n' + '==> ' + '  FILTERING THE TOPOGRAPHY ...\n' + ' '
-
+h[h > roms.hmax] = roms.hmax 
 h = smoothgrid(h, maskr, roms.hmin, roms.hmaxc,
              roms.slope, roms.npass, roms.nfinal)
+
+# computing rx1 factor based on N, Ts, Tb, Hc choices: should be 3 < rx1 < 7
+sc = ( np.arange(1, roms.N + 1) - roms.N - 0.5 ) / roms.N
+sigma = stretching(sc, roms.Vstret, roms.theta_s, roms.theta_b)
+zlev = get_zlev(h, sigma, roms.hc, sc, Vtransform=roms.Vtrans)
+rx1 = rl.rx1(zlev, maskr)
+
+if rx1.max() < 3 or rx1.max() > 7:
+    print "\n\n\n WARNING: rx1 = %s values violates thresholds !" %rx1.max()
+    m = Basemap(resolution='i', llcrnrlon=Lonr.min(), urcrnrlon=Lonr.max(),
+                                llcrnrlat=Latr.min(), urcrnrlat=Latr.max())
+    m.pcolormesh(Lonr, Latr, rx1, vmin=3, vmax=7)
+    m.fillcontinents()
+    plt.colorbar()
+    plt.show()
 
 
 ####################################################################
@@ -150,6 +172,8 @@ Mp = M + 1
 
 spherical = 'T'
 
+if not os.path.exists(os.path.dirname(roms.grdfile)):
+    os.makedirs(os.path.dirname(roms.grdfile))
 
 ncfile = nc.Dataset(roms.grdfile, mode='w',
     clobber='true', format='NETCDF3_CLASSIC')
@@ -252,7 +276,7 @@ ncfile.variables['pn'][:]  = pn
 # ---------------------------------------------------------------------------
 ncfile.createVariable('dndx', 'd', dimensions=('eta_rho', 'xi_rho'))
 setattr(ncfile.variables['dndx'], 'long_name', 
-	'XI derivative of inverse metric factor pn')
+    'XI derivative of inverse metric factor pn')
 setattr(ncfile.variables['dndx'], 'units', 'meter')
 # setattr(ncfile.variables['dndx'], 'coordinates', 'lon_rho lat_rho')
 ncfile.variables['dndx'][:]  = dndx
@@ -260,7 +284,7 @@ ncfile.variables['dndx'][:]  = dndx
 # ---------------------------------------------------------------------------
 ncfile.createVariable('dmde', 'd', dimensions=('eta_rho', 'xi_rho'))
 setattr(ncfile.variables['dmde'], 'long_name', 
-	'ETA derivative of inverse metric factor pm')
+    'ETA derivative of inverse metric factor pm')
 setattr(ncfile.variables['dmde'], 'units', 'meter')
 # setattr(ncfile.variables['dmde'], 'coordinates', 'lon_rho lat_rho')
 ncfile.variables['dmde'][:]  = dmde

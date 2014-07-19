@@ -1,0 +1,20 @@
+cabofrio:
+    name:     ROMS test domain
+    lims:     [0, 6, 54, 57] # [W, E, S, N]
+    res:      0.1 # degrees
+    grdfile:  /home/rsoutelino/myroms/cabofrio/cabofrio_grd.nc
+    tide:     
+    bathy:    /home/rsoutelino/myroms/etopo1.nc
+    N:        20 # number of sigma (vertical) layers of ROMS 3D grid
+    grdtype:  roms
+    Vtrans:   2 # vertical transformation equation 
+    Vstret:   4 # vertical stretching function
+    theta_s:  3 # surface stretching parameter
+    theta_b:  0 # bottom stretching parameter
+    hc:       10 # depth where theta_s starts stretching
+    hmin:     10 # minimun depth for model grid
+    hmax:     200 # maximum depth for model grid
+    slope:    0.1 # rx0 bathymetry smoothing factor ( < 0.4 is recommended)
+    npass:    4 # bathy smoothing parameter
+    nfinal:   2 # bathy smoothing parameter
+
