@@ -34,12 +34,8 @@
 #  Translated to Python by Rafael Soutelino: rsoutelino@gmail.com 
 #  Last Modification: Aug, 2010
 ################################################################
-
-
-print ' \n' + '==> ' + '  IMPORTING MODULES ...\n' + ' ' 
-# IMPORTING MODULES #################################################
 import os
-import sys
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import delaunay
@@ -50,30 +46,39 @@ import datetime as dt
 import netCDF4 as nc
 
 # classes and functions to the computings
-from romslab import RunSetup, rho2uvp, get_metrics, spheric_dist
-from romslab import get_angle, add_topo, process_mask, uvp_mask, smoothgrid
-from romslab import rotfilter, rfact, hanning_smoother
-from romslab import hanning_smoother_coef2d, FX, FY
-import romslab as rl
+from roms.romslab import RunSetup, rho2uvp, get_metrics, spheric_dist
+from roms.romslab import get_angle, add_topo, process_mask, uvp_mask, smoothgrid
+from roms.romslab import rotfilter, rfact, hanning_smoother
+from roms.romslab import hanning_smoother_coef2d, FX, FY
+import roms.romslab as rl
 
-from romslab import get_zlev, stretching
+from roms.core import get_zlev, stretching
+
+parser = argparse.ArgumentParser(description='Runs a ROMS simulation.')
+parser.add_argument('imp', metavar='imp', type=str,
+                   help='ROMS implementation name: Ex: [nsea, makas]')
+parser.add_argument('imp_type', metavar='type', type=str,
+                   help='Simulation type: [forecast, hindcast]')
+args = parser.parse_args()
+
+# sponge/nudging layer defaults
+SPONGE_SIZE   = 6
+SPONGE_FACTOR = 4 
+INNER_NUDGING = 1/60.                        
+OUTER_NUDGING = 1/5.                        
 
 # SCRIPT START ######################################################
-# USAGE: 
-# python make_grid.py [domain]
-# Ex: 
-#      python make_grid.py cabofrio
 
 # Basic Settings:
-imp = sys.argv[1]
-filetypestr = 'ROMS Grid file - %s %s' %(imp)
+filetypestr = 'ROMS Grid file - %s %s' %(args.imp, args.imp_type)
+rootdir = "/home/rsoutelino/metocean/github/roms/static"
 
 # READING PREVIOUSLY BUILT RELEVANT FILES: ###########################
 # metadata ascii file
 # OA-created netcdf initial T, S file 
 # grid netcdf file
 print ' \n' + '==> ' + '  READING ASCII METADATA FILE ...\n' + ' '
-roms = RunSetup( "/home/rsoutelino/students/pytools_students/domains.yaml", imp )
+roms = RunSetup( os.path.join(rootdir, "domains_%s.yaml" %args.imp_type), args.imp )
 
 dl = roms.res
 lonr  = np.arange(roms.lonmin, roms.lonmax + dl, dl)
@@ -145,6 +150,7 @@ h[h > roms.hmax] = roms.hmax
 h = smoothgrid(h, maskr, roms.hmin, roms.hmaxc,
              roms.slope, roms.npass, roms.nfinal)
 
+stop
 # computing rx1 factor based on N, Ts, Tb, Hc choices: should be 3 < rx1 < 7
 sc = ( np.arange(1, roms.N + 1) - roms.N - 0.5 ) / roms.N
 sigma = stretching(sc, roms.Vstret, roms.theta_s, roms.theta_b)
@@ -156,9 +162,39 @@ if rx1.max() < 3 or rx1.max() > 7:
     m = Basemap(resolution='i', llcrnrlon=Lonr.min(), urcrnrlon=Lonr.max(),
                                 llcrnrlat=Latr.min(), urcrnrlat=Latr.max())
     m.pcolormesh(Lonr, Latr, rx1, vmin=3, vmax=7)
-    m.fillcontinents()
+    m.drawcoastlines()
     plt.colorbar()
     plt.show()
+
+
+# making sponge layer configuration
+fac = np.linspace(1, SPONGE_FACTOR, SPONGE_SIZE)
+ss = SPONGE_SIZE
+visc = 0*h + 1
+
+visc[:,:ss] = fac[::-1].reshape(1, ss).repeat(visc.shape[0], axis=0) # east
+visc[:,-ss:] = fac.reshape(1, ss).repeat(visc.shape[0], axis=0) # west
+visc[:ss, :] = fac[::-1].reshape(ss, 1).repeat(visc.shape[1], axis=1) # south
+visc[-ss:, :] = fac.reshape(ss, 1).repeat(visc.shape[1], axis=1) # north
+
+diff = visc 
+
+# making nudging layers
+nud2d = 0*h
+# Initializing coefficients with zeros.  Recall that division by zero is not
+# defined and we will give "Inf".  Therefore, we just need to set
+# only the values in the desired areas and the rest can be zero
+# (for no nud2dging) because the nud2dging in ROMS is:
+#
+#      F(...,new) = F(...,new) +
+#                   dt * F_nud2dgcoef * (Fclm - F(...,new))
+fac = np.linspace(INNER_NUDGING, OUTER_NUDGING, SPONGE_SIZE)
+nud2d[:,:ss] = fac[::-1].reshape(1, ss).repeat(nud2d.shape[0], axis=0) # east
+nud2d[:,-ss:] = fac.reshape(1, ss).repeat(nud2d.shape[0], axis=0) # west
+nud2d[:ss, :] = fac[::-1].reshape(ss, 1).repeat(nud2d.shape[1], axis=1) # south
+nud2d[-ss:, :] = fac.reshape(ss, 1).repeat(nud2d.shape[1], axis=1) # north
+
+nud3d = nud2d.reshape(1, nud2d.shape[0], nud2d.shape[1]).repeat(roms.N, axis=0)
 
 
 ####################################################################
@@ -417,6 +453,20 @@ setattr(ncfile.variables['mask_psi'], 'flag_meanings', 'land, water')
 # setattr(ncfile.variables['mask_psi'], 'coordinates', 'lon_rho lat_rho')
 ncfile.variables['mask_psi'][:]  = maskp
 
+# ---------------------------------------------------------------------------
+ncfile.createVariable('visc_factor', 'd', dimensions=('eta_rho', 'xi_rho'))
+setattr(ncfile.variables['visc_factor'], 'long_name', 'horizontal viscosity sponge factor')
+setattr(ncfile.variables['visc_factor'], 'valid_min', 0.)
+setattr(ncfile.variables['visc_factor'], 'coordinates', 'lon_rho lat_rho')
+ncfile.variables['visc_factor'][:]  = visc
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('diff_factor', 'd', dimensions=('eta_rho', 'xi_rho'))
+setattr(ncfile.variables['diff_factor'], 'long_name', 'horizontal diffusivity sponge factor')
+setattr(ncfile.variables['diff_factor'], 'valid_min', 0.)
+setattr(ncfile.variables['diff_factor'], 'coordinates', 'lon_rho lat_rho')
+ncfile.variables['diff_factor'][:]  = diff
+
 ncfile.sync()
 
 print ' \n' + '==> ' + '  ############################################  ...\n' + ' '
@@ -424,7 +474,79 @@ print ' \n' + '==> ' + '        GRID FILE SUCCESSFULLY CREATED          ...\n' +
 print ' \n' + '==> ' + '  ############################################  ...\n' + ' '
 
 
+print ' \n' + '==> ' + '  WRITING NUDGING COEFICIENT FILE ...\n' + ' '
 
+roms.nudgfile = roms.grdfile.replace("grd", "nudg")
+filetypestr = filetypestr.replace("Grid", "Nudging Coefficients")
+today = dt.date.today()
+Lp = L + 1
+Mp = M + 1
+
+spherical = 'T'
+
+if not os.path.exists(os.path.dirname(roms.nudgfile)):
+    os.makedirs(os.path.dirname(roms.nudgfile))
+
+ncfile = nc.Dataset(roms.nudgfile, mode='w',
+    clobber='true', format='NETCDF3_CLASSIC')
+
+# creating DIMENSIONS
+
+ncfile.createDimension('xi_rho', size=Lp)
+ncfile.createDimension('eta_rho', size=Mp)
+ncfile.createDimension('s_rho', size=roms.N)
+
+
+
+# creating GLOBAL ATTRIBUTES
+setattr(ncfile, 'title', roms.name)
+setattr(ncfile, 'date', str(today))
+setattr(ncfile, 'type', filetypestr)
+
+
+# creating VARIABLES, ATTRIBUTES and ASSIGNING VALUES
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('M2_NudgeCoef', 'd', dimensions=('eta_rho', 'xi_rho'))
+setattr(ncfile.variables['M2_NudgeCoef'], 'long_name', '2D momentum inverse nudging coefficients')
+setattr(ncfile.variables['M2_NudgeCoef'], 'units', 'day-1')
+setattr(ncfile.variables['M2_NudgeCoef'], 'coordinates', 'xi_rho eta_rho')
+ncfile.variables['M2_NudgeCoef'][:]  = nud2d
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('M3_NudgeCoef', 'd', dimensions=('s_rho', 'eta_rho', 'xi_rho'))
+setattr(ncfile.variables['M3_NudgeCoef'], 'long_name', '3D momentum inverse nudging coefficients')
+setattr(ncfile.variables['M3_NudgeCoef'], 'units', 'day-1')
+setattr(ncfile.variables['M3_NudgeCoef'], 'coordinates', 'xi_rho eta_rho s_rho')
+ncfile.variables['M3_NudgeCoef'][:]  = nud3d
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('tracer_NudgeCoef', 'd', dimensions=('s_rho', 'eta_rho', 'xi_rho'))
+setattr(ncfile.variables['tracer_NudgeCoef'], 'long_name', 'generic tracer inverse nudging coefficients')
+setattr(ncfile.variables['tracer_NudgeCoef'], 'units', 'day-1')
+setattr(ncfile.variables['tracer_NudgeCoef'], 'coordinates', 'xi_rho eta_rho s_rho')
+ncfile.variables['tracer_NudgeCoef'][:]  = nud3d
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('temp_NudgeCoef', 'd', dimensions=('s_rho', 'eta_rho', 'xi_rho'))
+setattr(ncfile.variables['temp_NudgeCoef'], 'long_name', 'temp inverse nudging coefficients')
+setattr(ncfile.variables['temp_NudgeCoef'], 'units', 'day-1')
+setattr(ncfile.variables['temp_NudgeCoef'], 'coordinates', 'xi_rho eta_rho s_rho')
+ncfile.variables['temp_NudgeCoef'][:]  = nud3d
+
+# ---------------------------------------------------------------------------
+ncfile.createVariable('salt_NudgeCoef', 'd', dimensions=('s_rho', 'eta_rho', 'xi_rho'))
+setattr(ncfile.variables['salt_NudgeCoef'], 'long_name', 'salt inverse nudging coefficients')
+setattr(ncfile.variables['salt_NudgeCoef'], 'units', 'day-1')
+setattr(ncfile.variables['salt_NudgeCoef'], 'coordinates', 'xi_rho eta_rho s_rho')
+ncfile.variables['salt_NudgeCoef'][:]  = nud3d
+
+
+ncfile.sync()
+
+print ' \n' + '==> ' + '  ############################################  ...\n' + ' '
+print ' \n' + '==> ' + '        NUDGING FILE SUCCESSFULLY CREATED          ...\n' + ' '
+print ' \n' + '==> ' + '  ############################################  ...\n' + ' '
 
 
 
